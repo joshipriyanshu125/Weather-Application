@@ -17,7 +17,14 @@ const PORT = process.env.PORT || 5000;
  */
 app.set('trust proxy', 1);
 
-const DEFAULT_ORIGINS = ['http://localhost:5173', 'http://localhost:4173'];
+// The deployed frontend origin is always allowed, even if CLIENT_ORIGIN on the
+// host is missing or still points at localhost.
+const PRODUCTION_ORIGINS = ['https://weather-application-frontend-seven.vercel.app'];
+const DEFAULT_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  ...PRODUCTION_ORIGINS
+];
 const configuredOrigins = (process.env.CLIENT_ORIGIN || '')
   .split(',')
   .map((origin) => origin.trim().replace(/\/$/, ''))
