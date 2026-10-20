@@ -1,0 +1,282 @@
+import { weatherService } from '../services/weatherService.js';
+import { generateInsights } from '../services/insightsService.js';
+import { httpError } from '../middleware/errorHandler.js';
+import SearchHistory from '../models/SearchHistory.js';
+import FavoriteCity from '../models/FavoriteCity.js';
+import AlertHistory from '../models/AlertHistory.js';
+import UserSettings, { DEFAULT_SETTINGS } from '../models/UserSettings.js';
+import { alertFingerprint, evaluateWeatherAlerts } from '../services/alertService.js';
+
+const HISTORY_LIMIT = 10;
+
+/* ---------------- helpers ---------------- */
+
+/** Resolve validated target: coordinates (geolocation) or city name. */
+function resolveTarget(req) {
+  const { city, lat, lon } = req.query;
+  if (lat !== undefined && lon !== undefined) return { coords: { lat: Number(lat), lon: Number(lon) } };
+  return { city };
+}
+
+/** Best-effort history write — never fails the main request. */
+async function recordSearch(current) {
+  try {
+    await SearchHistory.findOneAndUpdate(
+      { city: current.city.toLowerCase() },
+      {
+        $set: {
+          city: current.city.toLowerCase(),
+          country: current.country,
+          coords: current.coords,
+          lastIcon: current.icon,
+          lastTemp: current.temperature
+        },
+        $inc: { count: 1 }
+      },
+      { upsert: true, new: true }
+    );
+    // keep only the most recent HISTORY_LIMIT entries
+    const overflow = await SearchHistory.find()
+      .sort({ updatedAt: -1 })
+      .skip(HISTORY_LIMIT)
+      .select('_id')
+      .lean();
+    if (overflow.length) {
+      await SearchHistory.deleteMany({ _id: { $in: overflow.map((d) => d._id) } });
+    }
+  } catch (err) {
+    console.warn('[history] Could not record search:', err.message);
+  }
+}
+
+/* ---------------- weather handlers ---------------- */
+
+export async function getCurrentWeather(req, res, next) {
+  try {
+    const target = resolveTarget(req);
+    const current = target.coords
+      ? await weatherService.fetchCurrentByCoords(target.coords.lat, target.coords.lon)
+      : await weatherService.fetchCurrentByCity(target.city);
+    await recordSearch(current);
+    res.json({ ok: true, data: current });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getForecast(req, res, next) {
+  try {
+    const target = resolveTarget(req);
+    const forecast = target.coords
+      ? await weatherService.fetchForecastByCoords(target.coords.lat, target.coords.lon)
+      : await weatherService.fetchForecastByCity(target.city);
+    res.json({ ok: true, data: forecast });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** City geocoding suggestions (search-as-you-type). */
+export async function searchCities(req, res, next) {
+  try {
+    const results = await weatherService.geocode(req.query.q);
+    res.json({ ok: true, data: results });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * AI weather insights: 3 brief, actionable recommendations for the same
+ * WeatherBundle the dashboard renders. Uses an LLM when OPENAI_API_KEY is
+ * configured; otherwise the built-in rule engine (never fails on the AI layer).
+ */
+export async function getWeatherInsights(req, res, next) {
+  try {
+    const target = resolveTarget(req);
+    const unit = req.query.unit === 'F' ? 'F' : 'C';
+
+    const [current, forecast] = await Promise.all([
+      target.coords
+        ? weatherService.fetchCurrentByCoords(target.coords.lat, target.coords.lon)
+        : weatherService.fetchCurrentByCity(target.city),
+      target.coords
+        ? weatherService.fetchForecastByCoords(target.coords.lat, target.coords.lon)
+        : weatherService.fetchForecastByCity(target.city)
+    ]);
+
+    const result = await generateInsights({ current, forecast }, unit);
+    res.json({
+      ok: true,
+      data: { ...result, city: current.city, unit, generatedAt: new Date().toISOString() }
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ---------------- history (public, per-browser) ---------------- */
+
+export async function getHistory(req, res, next) {
+  try {
+    const history = await SearchHistory.find().sort({ updatedAt: -1 }).limit(HISTORY_LIMIT).lean();
+    res.json({ ok: true, data: history });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function clearHistory(req, res, next) {
+  try {
+    await SearchHistory.deleteMany({});
+    res.json({ ok: true, data: { cleared: true } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ---------------- favorites (authenticated, per-user) ----------------
+ * Row-level security equivalent: every query is filtered by req.user.id,
+ * so a user can never read or mutate another user's saved locations.
+ * ------------------------------------------------------------------- */
+
+export async function getFavorites(req, res, next) {
+  try {
+    const favorites = await FavoriteCity.find({ user: req.user.id })
+      .sort({ updatedAt: -1 })
+      .limit(20)
+      .lean();
+    res.json({ ok: true, data: favorites });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function addFavorite(req, res, next) {
+  try {
+    const { city, country = '', coords = null, label = '' } = req.body;
+    const name = city.toLowerCase();
+
+    const favorite = await FavoriteCity.findOneAndUpdate(
+      { user: req.user.id, city: name },
+      { $set: { user: req.user.id, city: name, country, coords, label } },
+      { upsert: true, new: true }
+    );
+
+    res.status(201).json({ ok: true, data: favorite });
+  } catch (err) {
+    if (err.code === 11000) return next(httpError(409, 'City already saved to favorites.'));
+    next(err);
+  }
+}
+
+export async function removeFavorite(req, res, next) {
+  try {
+    const name = String(req.params.city || '').trim().toLowerCase();
+    const result = await FavoriteCity.deleteOne({ user: req.user.id, city: name });
+    if (result.deletedCount === 0) throw httpError(404, `Favorite "${name}" not found.`);
+    res.json({ ok: true, data: { removed: name } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ---------------- saved-location alert center ---------------- */
+
+async function fetchLocationWeather(favorite) {
+  const target = favorite.coords?.lat != null && favorite.coords?.lon != null
+    ? { coords: { lat: favorite.coords.lat, lon: favorite.coords.lon } }
+    : { city: favorite.city };
+  const [current, forecast] = await Promise.all([
+    target.coords
+      ? weatherService.fetchCurrentByCoords(target.coords.lat, target.coords.lon)
+      : weatherService.fetchCurrentByCity(target.city),
+    target.coords
+      ? weatherService.fetchForecastByCoords(target.coords.lat, target.coords.lon)
+      : weatherService.fetchForecastByCity(target.city)
+  ]);
+  return { current, forecast };
+}
+
+async function recordDetectedAlert(userId, favorite, alert) {
+  const fingerprint = alertFingerprint(favorite.city, alert);
+  try {
+    await AlertHistory.findOneAndUpdate(
+      { user: userId, fingerprint },
+      {
+        $set: {
+          user: userId,
+          city: favorite.city,
+          country: favorite.country || '',
+          type: alert.type,
+          source: alert.source,
+          title: alert.title,
+          message: alert.message,
+          value: alert.value,
+          threshold: alert.threshold,
+          forecastFor: alert.forecastFor || '',
+          detectedAt: new Date(alert.detectedAt)
+        },
+        $setOnInsert: { fingerprint }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  } catch (err) {
+    // A history write must never make a useful preview fail.
+    console.warn('[alerts] Could not record alert history:', err.message);
+  }
+}
+
+/** Preview current and near-term threshold matches for every saved location. */
+export async function getAlertPreview(req, res, next) {
+  try {
+    const [favorites, savedSettings] = await Promise.all([
+      FavoriteCity.find({ user: req.user.id }).sort({ updatedAt: -1 }).limit(20).lean(),
+      UserSettings.findOne({ user: req.user.id }).lean()
+    ]);
+    const settings = { ...DEFAULT_SETTINGS, ...(savedSettings || {}) };
+
+    const locations = await Promise.all(favorites.map(async (favorite) => {
+      try {
+        const bundle = await fetchLocationWeather(favorite);
+        const alerts = evaluateWeatherAlerts(bundle, settings);
+        await Promise.all(alerts.map((alert) => recordDetectedAlert(req.user.id, favorite, alert)));
+        return {
+          city: favorite.city,
+          country: favorite.country || bundle.current.country || '',
+          coords: favorite.coords,
+          checkedAt: new Date().toISOString(),
+          status: alerts.length ? 'triggered' : 'clear',
+          alerts
+        };
+      } catch (err) {
+        return {
+          city: favorite.city,
+          country: favorite.country || '',
+          coords: favorite.coords,
+          checkedAt: new Date().toISOString(),
+          status: 'unavailable',
+          alerts: [],
+          error: err.message || 'Could not check this location.'
+        };
+      }
+    }));
+
+    res.json({ ok: true, data: { settings, checkedAt: new Date().toISOString(), locations } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Most recently detected alerts for the authenticated user's saved locations. */
+export async function getAlertHistory(req, res, next) {
+  try {
+    const history = await AlertHistory.find({ user: req.user.id })
+      .sort({ detectedAt: -1 })
+      .limit(50)
+      .lean();
+    res.json({ ok: true, data: history });
+  } catch (err) {
+    next(err);
+  }
+}
