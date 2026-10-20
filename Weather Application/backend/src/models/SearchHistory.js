@@ -15,6 +15,6 @@ const searchHistorySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-searchHistorySchema.index({ searchedAt: -1 });
+searchHistorySchema.index({ updatedAt: -1 });
 
 export default mongoose.model('SearchHistory', searchHistorySchema);

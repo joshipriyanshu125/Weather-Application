@@ -10,12 +10,23 @@ import { errorHandler, notFound } from './middleware/errorHandler.js';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+app.disable('x-powered-by');
+
 /**
  * Render terminates TLS at a proxy and forwards the real client IP in
  * X-Forwarded-For. Without trusting that proxy, express-rate-limit refuses
  * the header and throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
  */
 app.set('trust proxy', 1);
+
+// Collapse duplicate slashes in the request path (e.g. `//api/auth/signin`)
+// so a misconfigured API base URL with a trailing slash still resolves.
+app.use((req, res, next) => {
+  const [path, query] = req.url.split('?');
+  const normalized = path.replace(/\/{2,}/g, '/');
+  req.url = query ? `${normalized}?${query}` : normalized;
+  next();
+});
 
 // The deployed frontend origin is always allowed, even if CLIENT_ORIGIN on the
 // host is missing or still points at localhost.
@@ -35,12 +46,14 @@ const configuredOrigins = (process.env.CLIENT_ORIGIN || '')
 // to lock the API down to specific sites.
 const allowAnyOrigin = configuredOrigins.length === 0;
 const allowedOrigins = [...new Set([...DEFAULT_ORIGINS, ...configuredOrigins])];
+const VERCEL_PREVIEW_ORIGIN = /^https:\/\/weather-application-frontend-[a-z0-9-]+\.vercel\.app$/i;
 
 app.use(
   cors({
     origin(origin, callback) {
       if (!origin || allowAnyOrigin) return callback(null, true);
-      callback(null, allowedOrigins.includes(origin.replace(/\/$/, '')));
+      const normalized = origin.replace(/\/$/, '');
+      callback(null, allowedOrigins.includes(normalized) || VERCEL_PREVIEW_ORIGIN.test(normalized));
     },
     credentials: true
   })

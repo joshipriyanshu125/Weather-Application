@@ -23,7 +23,7 @@ export default function SearchForm({ onSearch, history, onClearHistory, loading,
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
-        const results = await api.searchCities(q);
+        const results = await api.searchCities(q, { signal: controller.signal });
         setSuggestions(results);
         setOpen(true);
         setActive(-1);

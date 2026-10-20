@@ -94,6 +94,9 @@ export const favoriteSchema = z.object({
       lat: optionalLat,
       lon: optionalLon
     })
+    .refine((value) => (value.lat === undefined) === (value.lon === undefined), {
+      message: 'Both lat and lon are required together.'
+    })
     .optional()
     .default(null)
     .nullable()

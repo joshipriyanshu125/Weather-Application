@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import { weatherLimiter, insightsLimiter } from '../middleware/rateLimiter.js';
-import { validateQuery } from '../middleware/validate.js';
-import { weatherQuerySchema, searchQuerySchema, insightsQuerySchema } from '../middleware/schemas.js';
+import { validateQuery, validateBody } from '../middleware/validate.js';
+import {
+  weatherQuerySchema,
+  searchQuerySchema,
+  insightsQuerySchema,
+  favoriteSchema
+} from '../middleware/schemas.js';
 import { requireAuth } from '../middleware/auth.js';
 import {
   getCurrentWeather,
@@ -32,7 +37,7 @@ router.get('/history', getHistory);
 router.delete('/history', clearHistory);
 
 router.get('/favorites', requireAuth, getFavorites);
-router.post('/favorites', requireAuth, addFavorite);
+router.post('/favorites', requireAuth, validateBody(favoriteSchema), addFavorite);
 router.delete('/favorites/:city', requireAuth, removeFavorite);
 
 /* Saved-location alert center — both views are scoped to the signed-in user. */

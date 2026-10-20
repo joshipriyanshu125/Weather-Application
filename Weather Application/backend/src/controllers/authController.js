@@ -20,6 +20,9 @@ export async function signup(req, res, next) {
       data: { token: signToken(user), user: user.toSafeJSON() }
     });
   } catch (err) {
+    if (err.code === 11000) {
+      return next(httpError(409, 'An account with this email already exists.'));
+    }
     next(err);
   }
 }

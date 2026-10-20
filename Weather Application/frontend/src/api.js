@@ -9,9 +9,11 @@ const RENDER_API_URL = 'https://weather-application-s73i.onrender.com';
  * In development VITE_API_BASE_URL is unset, so requests stay relative and are
  * proxied by Vite to localhost:5000. In a production build the fallback points
  * straight at the deployed Render backend (an explicit env var still wins).
+ * Trailing slashes are stripped so paths never become `//api/...`.
  */
-const BASE =
+const rawBase =
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? RENDER_API_URL : '');
+const BASE = rawBase.replace(/\/+$/, '');
 const TOKEN_KEY = 'wd_token';
 
 export function getToken() {
@@ -30,10 +32,11 @@ async function request(path, options = {}) {
   let response;
   try {
     response = await fetch(`${BASE}${path}`, { ...options, headers });
-  } catch {
-    const err = new Error('Network error — you appear to be offline.');
-    err.status = 503;
-    throw err;
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err;
+    const networkError = new Error('Network error — could not reach the API.');
+    networkError.status = 503;
+    throw networkError;
   }
 
   let body = null;
@@ -63,7 +66,7 @@ export const api = {
     request(`/api/weather/current?${target.coords ? qs({ lat: target.coords.lat, lon: target.coords.lon }) : qs({ city: target.city })}`),
   forecast: (target) =>
     request(`/api/weather/forecast?${target.coords ? qs({ lat: target.coords.lat, lon: target.coords.lon }) : qs({ city: target.city })}`),
-  searchCities: (q) => request(`/api/weather/search?${qs({ q })}`),
+  searchCities: (q, options = {}) => request(`/api/weather/search?${qs({ q })}`, options),
   insights: (target, unit = 'C') =>
     request(
       `/api/weather/insights?${
