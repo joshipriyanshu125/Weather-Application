@@ -12,6 +12,8 @@ build/
 .env.local
 .env.production
 !*.env.example
+# The frontend production file only holds the public Render URL (no secrets)
+!Weather Application/frontend/.env.production
 
 # Logs
 npm-debug.log*

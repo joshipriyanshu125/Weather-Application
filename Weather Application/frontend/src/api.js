@@ -3,7 +3,15 @@
  * All traffic goes through our Express backend — the OpenWeatherMap key
  * never reaches the browser. JWT is attached automatically when present.
  */
-const BASE = import.meta.env.VITE_API_BASE_URL || '';
+const RENDER_API_URL = 'https://weather-application-s73i.onrender.com';
+
+/**
+ * In development VITE_API_BASE_URL is unset, so requests stay relative and are
+ * proxied by Vite to localhost:5000. In a production build the fallback points
+ * straight at the deployed Render backend (an explicit env var still wins).
+ */
+const BASE =
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? RENDER_API_URL : '');
 const TOKEN_KEY = 'wd_token';
 
 export function getToken() {
