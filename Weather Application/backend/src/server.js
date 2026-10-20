@@ -9,9 +9,35 @@ import { errorHandler, notFound } from './middleware/errorHandler.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
-app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
+/**
+ * Render terminates TLS at a proxy and forwards the real client IP in
+ * X-Forwarded-For. Without trusting that proxy, express-rate-limit refuses
+ * the header and throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
+ */
+app.set('trust proxy', 1);
+
+const DEFAULT_ORIGINS = ['http://localhost:5173', 'http://localhost:4173'];
+const configuredOrigins = (process.env.CLIENT_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+// If CLIENT_ORIGIN isn't configured, reflect the caller's origin so a freshly
+// deployed frontend can connect. Set CLIENT_ORIGIN (comma-separated is fine)
+// to lock the API down to specific sites.
+const allowAnyOrigin = configuredOrigins.length === 0;
+const allowedOrigins = [...new Set([...DEFAULT_ORIGINS, ...configuredOrigins])];
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowAnyOrigin) return callback(null, true);
+      callback(null, allowedOrigins.includes(origin.replace(/\/$/, '')));
+    },
+    credentials: true
+  })
+);
 app.use(express.json({ limit: '100kb' }));
 
 // Root — lets you verify the deployed service from a browser
