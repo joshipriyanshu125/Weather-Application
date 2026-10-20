@@ -11,6 +11,7 @@ import {
   Tooltip
 } from 'recharts';
 import { formatHour, toFahrenheit } from '../hooks/useGeolocation.js';
+import { useTheme } from '../context/ThemeContext.jsx';
 
 /**
  * Two side-by-side chart cards (full-width row):
@@ -19,7 +20,7 @@ import { formatHour, toFahrenheit } from '../hooks/useGeolocation.js';
  * follow the theme and condition-aware accent automatically.
  */
 export default function ForecastCharts({ hourly, days, unit }) {
-  const theme = document.documentElement.dataset.theme;
+  const { theme } = useTheme();
   const condition = document.documentElement.dataset.condition;
 
   // Read the live accent from CSS so charts follow theme + condition accents
