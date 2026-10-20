@@ -14,6 +14,21 @@ const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
 app.use(express.json({ limit: '100kb' }));
 
+// Root — lets you verify the deployed service from a browser
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'Weather Dashboard API',
+    message: 'API is running. Use one of the endpoints below.',
+    health: '/health',
+    endpoints: {
+      auth: '/api/auth',
+      weather: '/api/weather',
+      settings: '/api/settings'
+    }
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
